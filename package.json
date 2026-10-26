@@ -1,0 +1,26 @@
+{
+  "name": "warehouse-management-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Enterprise Warehouse Management System (WMS)",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm run dev:client",
+    "dev:all": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "npm --prefix client run dev",
+    "dev:server": "npm --prefix server run dev",
+    "build:client": "npm --prefix client run build",
+    "build:server": "npm --prefix server run build",
+    "build": "npm run build:server && npm run build:client",
+    "start:server": "npm --prefix server start",
+    "test": "npm --prefix server run test:all",
+    "test:all": "npm --prefix server run test:all",
+    "test:health": "curl http://localhost:5000/api/health"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

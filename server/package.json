@@ -1,0 +1,44 @@
+{
+  "name": "wms-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend API Server for Warehouse Management System",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "lint": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:push": "prisma db push",
+    "prisma:seed": "tsx prisma/seed.ts",
+    "test:auth": "tsx src/tests/auth.test.ts",
+    "test:master-data": "tsx src/tests/masterData.test.ts",
+    "test:inventory": "tsx src/tests/inventory.test.ts",
+    "test:purchasing": "tsx src/tests/purchasing.test.ts",
+    "test:fulfillment": "tsx src/tests/fulfillment.test.ts",
+    "test:analytics": "tsx src/tests/analytics.test.ts",
+    "test:all": "tsx src/tests/auth.test.ts && tsx src/tests/masterData.test.ts && tsx src/tests/inventory.test.ts && tsx src/tests/purchasing.test.ts && tsx src/tests/fulfillment.test.ts && tsx src/tests/analytics.test.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.14.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.12.7",
+    "prisma": "^5.14.0",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.5"
+  }
+}

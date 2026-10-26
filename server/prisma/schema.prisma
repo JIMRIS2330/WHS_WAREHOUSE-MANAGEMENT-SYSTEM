@@ -1,0 +1,647 @@
+// =============================================================================
+// PRISMA SCHEMA FOR WMS: PHASE 4 - CORE INVENTORY ENGINE & LEDGER
+// =============================================================================
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// ENUMS
+// -----------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  WAREHOUSE_MANAGER
+  WAREHOUSE_STAFF
+}
+
+enum StorageClass {
+  AMBIENT
+  COLD_STORAGE
+  FROZEN
+  HAZARDOUS
+  HIGH_VALUE
+  FRAGILE
+}
+
+enum UnitOfMeasure {
+  EACH
+  PIECE
+  BOX
+  CARTON
+  PALLET
+  KILOGRAM
+  METER
+  LITER
+}
+
+enum POStatus {
+  DRAFT
+  SUBMITTED
+  PARTIALLY_RECEIVED
+  FULLY_RECEIVED
+  CANCELLED
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  ALLOCATED
+  PICKING
+  PICKED
+  PACKED
+  DISPATCHED
+  CANCELLED
+}
+
+enum PickTaskStatus {
+  PENDING
+  IN_PROGRESS
+  PICKED
+  SHORT_PICKED
+}
+
+enum ZoneType {
+  RECEIVING_DOCK
+  STAGING
+  BULK_STORAGE
+  PICK_FACE
+  PACKING_STATION
+  SHIPPING_DOCK
+  QUALITY_CONTROL
+  QUARANTINE
+  RETURNS
+}
+
+enum MovementType {
+  STOCK_IN
+  STOCK_OUT
+  TRANSFER
+  ADJUSTMENT_INCREASE
+  ADJUSTMENT_DECREASE
+  RESERVATION
+  RESERVATION_RELEASE
+}
+
+enum AdjustmentReason {
+  DAMAGED_GOODS
+  EXPIRED_STOCK
+  CYCLE_COUNT_DISCREPANCY
+  THEFT_OR_SHRINKAGE
+  FOUND_STOCK
+  DATA_ENTRY_CORRECTION
+  SCRAP
+}
+
+// -----------------------------------------------------------------------------
+// USERS & AUTHENTICATION
+// -----------------------------------------------------------------------------
+
+model User {
+  id                  String            @id @default(uuid())
+  email               String            @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  role                UserRole          @default(WAREHOUSE_STAFF)
+  isActive            Boolean           @default(true)
+  phone               String?
+  assignedWarehouseId String?
+  assignedWarehouse   Warehouse?        @relation(fields: [assignedWarehouseId], references: [id], onDelete: SetNull)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  sessions            Session[]
+  auditLogs           AuditLog[]
+  stockMovements      StockMovement[]
+  stockAdjustments    StockAdjustment[]
+  createdPurchaseOrders PurchaseOrder[] @relation("POCreator")
+  goodsReceipts       GoodsReceipt[]    @relation("ReceivedByUser")
+  createdOrders       CustomerOrder[]   @relation("OrderCreator")
+  pickedTasks         PickTask[]        @relation("PickedByUser")
+  dispatchedShipments Shipment[]        @relation("DispatchedByUser")
+
+  @@index([email])
+  @@index([role])
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  token        String    @unique
+  refreshToken String    @unique
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isRevoked    Boolean   @default(false)
+  ipAddress    String?
+  userAgent    String?
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([token])
+  @@index([refreshToken])
+}
+
+// -----------------------------------------------------------------------------
+// CATEGORIES & PRODUCTS
+// -----------------------------------------------------------------------------
+
+model Category {
+  id          String     @id @default(uuid())
+  code        String     @unique
+  name        String     @unique
+  description String?
+  parentId    String?
+  parent      Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children    Category[] @relation("CategoryHierarchy")
+  products    Product[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([code])
+  @@index([parentId])
+}
+
+model Product {
+  id              String          @id @default(uuid())
+  sku             String          @unique
+  barcode         String?         @unique
+  name            String
+  description     String?
+  categoryId      String
+  category        Category        @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  uom             UnitOfMeasure   @default(EACH)
+  storageClass    StorageClass    @default(AMBIENT)
+
+  // Physical specifications
+  weightKg        Float?
+  lengthCm        Float?
+  widthCm         Float?
+  heightCm        Float?
+
+  // Financial specifications
+  costPrice       Float           @default(0.0)
+  sellingPrice    Float           @default(0.0)
+
+  // Replenishment thresholds
+  reorderPoint    Int             @default(10)
+  reorderQuantity Int             @default(50)
+  minStockLevel   Int             @default(5)
+  maxStockLevel   Int             @default(1000)
+
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  inventoryItems  InventoryItem[]
+  stockMovements  StockMovement[]
+  poLineItems     POLineItem[]
+  grnItems        GoodsReceiptItem[]
+  orderLineItems  OrderLineItem[]
+  pickTasks       PickTask[]
+
+  @@index([sku])
+  @@index([barcode])
+  @@index([categoryId])
+  @@index([isActive])
+}
+
+// -----------------------------------------------------------------------------
+// SUPPLIERS
+// -----------------------------------------------------------------------------
+
+model Supplier {
+  id           String   @id @default(uuid())
+  code         String   @unique
+  name         String
+  contactName  String?
+  email        String
+  phone        String
+  address      String
+  city         String
+  country      String
+  leadTimeDays Int      @default(7)
+  paymentTerms String?  @default("Net 30")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+
+  @@index([code])
+  @@index([name])
+}
+
+// -----------------------------------------------------------------------------
+// WAREHOUSES & LOCATIONS HIERARCHY
+// -----------------------------------------------------------------------------
+
+model Warehouse {
+  id             String          @id @default(uuid())
+  code           String          @unique
+  name           String
+  address        String          @default("100 Industrial Parkway")
+  city           String
+  country        String
+  postalCode     String          @default("60601")
+  totalAreaM2    Float           @default(10000.0)
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  users          User[]
+  zones          Zone[]
+  locations      Location[]
+  inventoryItems InventoryItem[]
+  stockMovements StockMovement[]
+  purchaseOrders PurchaseOrder[]
+  goodsReceipts  GoodsReceipt[]
+  orders         CustomerOrder[]
+  shipments      Shipment[]
+
+  @@index([code])
+}
+
+model Zone {
+  id                      String     @id @default(uuid())
+  warehouseId             String
+  warehouse               Warehouse  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  code                    String
+  name                    String
+  type                    ZoneType   @default(BULK_STORAGE)
+  isTemperatureControlled Boolean    @default(false)
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+
+  locations               Location[]
+
+  @@unique([warehouseId, code])
+  @@index([warehouseId])
+}
+
+model Location {
+  id              String          @id @default(uuid())
+  warehouseId     String
+  warehouse       Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  zoneId          String
+  zone            Zone            @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+
+  barcode         String          @unique
+  aisle           String
+  rack            String
+  shelf           String
+  bin             String
+
+  pickSequence    Int             @default(100)
+  maxWeightKg     Float?          @default(500.0)
+  maxVolumeM3     Float?          @default(2.5)
+  isOccupied      Boolean         @default(false)
+  isLocked        Boolean         @default(false)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  inventoryItems  InventoryItem[]
+  sourceMovements StockMovement[] @relation("SourceMovements")
+  destMovements   StockMovement[] @relation("DestMovements")
+  grnItems        GoodsReceiptItem[]
+  pickTasks       PickTask[]
+
+  @@unique([warehouseId, aisle, rack, shelf, bin])
+  @@index([barcode])
+  @@index([zoneId])
+  @@index([warehouseId])
+}
+
+// -----------------------------------------------------------------------------
+// CORE INVENTORY ENGINE: BALANCES & MOVEMENTS
+// -----------------------------------------------------------------------------
+
+model InventoryItem {
+  id               String            @id @default(uuid())
+  warehouseId      String
+  warehouse        Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  locationId       String
+  location         Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  productId        String
+  product          Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  batchNumber      String?
+
+  // Balances
+  quantityOnHand   Float             @default(0.0)
+  quantityReserved Float             @default(0.0) // Reserved for open pick lists
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  stockAdjustments StockAdjustment[]
+
+  @@unique([warehouseId, locationId, productId])
+  @@index([warehouseId, productId])
+  @@index([locationId])
+  @@index([productId])
+}
+
+model StockMovement {
+  id                String            @id @default(uuid())
+  productId         String
+  product           Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouseId       String
+  warehouse         Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  sourceLocationId  String?
+  sourceLocation    Location?         @relation("SourceMovements", fields: [sourceLocationId], references: [id], onDelete: SetNull)
+  destLocationId    String?
+  destLocation      Location?         @relation("DestMovements", fields: [destLocationId], references: [id], onDelete: SetNull)
+
+  quantity          Float
+  movementType      MovementType
+  referenceType     String?           // e.g. MANUAL_ADJUSTMENT, RECEIVING_INBOUND, ORDER_DISPATCH, TRANSFER
+  referenceId       String?           // PO-001, SO-002, TR-003, ADJ-004
+  previousOnHand    Float             @default(0.0)
+  newOnHand         Float             @default(0.0)
+  unitCost          Float             @default(0.0)
+
+  performedByUserId String?
+  performedByUser   User?             @relation(fields: [performedByUserId], references: [id], onDelete: SetNull)
+  reasonCode        AdjustmentReason?
+  notes             String?
+  createdAt         DateTime          @default(now())
+
+  @@index([productId])
+  @@index([warehouseId])
+  @@index([createdAt])
+  @@index([movementType])
+  @@index([referenceId])
+}
+
+model StockAdjustment {
+  id               String           @id @default(uuid())
+  inventoryItemId  String
+  inventoryItem    InventoryItem    @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  adjustedByUserId String
+  adjustedByUser   User             @relation(fields: [adjustedByUserId], references: [id], onDelete: Restrict)
+
+  previousQty      Float
+  newQty           Float
+  deltaQty         Float
+  reasonCode       AdjustmentReason
+  notes            String?
+  createdAt        DateTime         @default(now())
+
+  @@index([inventoryItemId])
+  @@index([adjustedByUserId])
+  @@index([createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// AUDIT LOG
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  entity    String
+  entityId  String?
+  details   String?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// PURCHASING & GOODS RECEIVING (GRN)
+// -----------------------------------------------------------------------------
+
+model PurchaseOrder {
+  id                  String         @id @default(uuid())
+  poNumber            String         @unique
+  supplierId          String
+  supplier            Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  warehouseId         String
+  warehouse           Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  status              POStatus       @default(DRAFT)
+  expectedDate        DateTime?
+  totalAmount         Float          @default(0.0)
+  notes               String?
+  createdByUserId     String?
+  createdByUser       User?          @relation("POCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  lineItems           POLineItem[]
+  goodsReceipts       GoodsReceipt[]
+
+  @@index([poNumber])
+  @@index([supplierId])
+  @@index([warehouseId])
+  @@index([status])
+}
+
+model POLineItem {
+  id               String             @id @default(uuid())
+  purchaseOrderId  String
+  purchaseOrder    PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantityOrdered  Float
+  quantityReceived Float              @default(0.0)
+  quantityAccepted Float              @default(0.0)
+  quantityRejected Float              @default(0.0)
+  unitCost         Float              @default(0.0)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  receiptItems     GoodsReceiptItem[]
+
+  @@unique([purchaseOrderId, productId])
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+model GoodsReceipt {
+  id               String             @id @default(uuid())
+  receiptNumber    String             @unique // e.g. GRN-2026-0001
+  purchaseOrderId  String
+  purchaseOrder    PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  warehouseId      String
+  warehouse        Warehouse          @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  receivedByUserId String?
+  receivedByUser   User?              @relation("ReceivedByUser", fields: [receivedByUserId], references: [id], onDelete: SetNull)
+  carrierName      String?
+  trackingNumber   String?
+  billOfLading     String?
+  receivedAt       DateTime           @default(now())
+  notes            String?
+  createdAt        DateTime           @default(now())
+
+  items            GoodsReceiptItem[]
+
+  @@index([receiptNumber])
+  @@index([purchaseOrderId])
+  @@index([warehouseId])
+  @@index([receivedAt])
+}
+
+model GoodsReceiptItem {
+  id               String       @id @default(uuid())
+  goodsReceiptId   String
+  goodsReceipt     GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  poLineItemId     String
+  poLineItem       POLineItem   @relation(fields: [poLineItemId], references: [id], onDelete: Restrict)
+  productId        String
+  product          Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  locationId       String
+  location         Location     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  quantityReceived Float
+  quantityAccepted Float
+  quantityRejected Float        @default(0.0)
+  batchNumber      String?
+  rejectionReason  String?
+  createdAt        DateTime     @default(now())
+
+  @@index([goodsReceiptId])
+  @@index([poLineItemId])
+  @@index([productId])
+  @@index([locationId])
+}
+
+// -----------------------------------------------------------------------------
+// CUSTOMER ORDERS & FULFILLMENT (PHASE 6)
+// -----------------------------------------------------------------------------
+
+model Customer {
+  id           String          @id @default(uuid())
+  code         String          @unique
+  name         String
+  contactName  String?
+  email        String
+  phone        String
+  address      String
+  city         String
+  country      String
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  orders       CustomerOrder[]
+
+  @@index([code])
+  @@index([name])
+}
+
+model CustomerOrder {
+  id              String          @id @default(uuid())
+  orderNumber     String          @unique // e.g. SO-2026-0001
+  customerId      String
+  customer        Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  warehouseId     String
+  warehouse       Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  status          OrderStatus     @default(DRAFT)
+  orderDate       DateTime        @default(now())
+  requiredDate    DateTime?
+  shippingAddress String?
+  shippingCity    String?
+  shippingCountry String?
+  totalAmount     Float           @default(0.0)
+  notes           String?
+  createdByUserId String?
+  createdByUser   User?           @relation("OrderCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  lineItems       OrderLineItem[]
+  pickTasks       PickTask[]
+  shipments       Shipment[]
+
+  @@index([orderNumber])
+  @@index([customerId])
+  @@index([warehouseId])
+  @@index([status])
+}
+
+model OrderLineItem {
+  id                 String          @id @default(uuid())
+  orderId            String
+  order              CustomerOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId          String
+  product            Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  quantityOrdered    Float
+  quantityReserved   Float           @default(0.0)
+  quantityPicked     Float           @default(0.0)
+  quantityPacked     Float           @default(0.0)
+  quantityDispatched Float           @default(0.0)
+  unitPrice          Float           @default(0.0)
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  pickTasks          PickTask[]
+
+  @@unique([orderId, productId])
+  @@index([orderId])
+  @@index([productId])
+}
+
+model PickTask {
+  id              String          @id @default(uuid())
+  orderId         String
+  order           CustomerOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderLineItemId String
+  orderLineItem   OrderLineItem   @relation(fields: [orderLineItemId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  locationId      String
+  location        Location        @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  quantityToPick  Float
+  quantityPicked  Float           @default(0.0)
+  status          PickTaskStatus  @default(PENDING)
+  pickSequence    Int             @default(100)
+  pickedByUserId  String?
+  pickedByUser    User?           @relation("PickedByUser", fields: [pickedByUserId], references: [id], onDelete: SetNull)
+  pickedAt        DateTime?
+  notes           String?
+  createdAt       DateTime        @default(now())
+
+  @@index([orderId])
+  @@index([orderLineItemId])
+  @@index([productId])
+  @@index([locationId])
+  @@index([status])
+}
+
+model Shipment {
+  id                 String          @id @default(uuid())
+  dispatchNumber     String          @unique // e.g. DSP-2026-0001
+  orderId            String
+  order              CustomerOrder   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  warehouseId        String
+  warehouse          Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  carrierName        String
+  trackingNumber     String?
+  shippingMethod     String?
+  dispatchedAt       DateTime        @default(now())
+  dispatchedByUserId String?
+  dispatchedByUser   User?           @relation("DispatchedByUser", fields: [dispatchedByUserId], references: [id], onDelete: SetNull)
+  notes              String?
+  createdAt          DateTime        @default(now())
+
+  @@index([dispatchNumber])
+  @@index([orderId])
+  @@index([warehouseId])
+  @@index([dispatchedAt])
+}
